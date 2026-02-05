@@ -1,0 +1,290 @@
+#!/bin/bash
+
+# --- 1. Color Palette ---
+reset='\033[0m'
+bold='\033[1m'
+dim='\033[2m'
+red='\033[38;5;196m'
+green='\033[38;5;71m'
+yellow='\033[38;5;214m'
+blue='\033[38;5;75m'
+magenta='\033[38;5;176m'
+cyan='\033[38;5;79m'
+white='\033[38;5;255m'
+gray='\033[38;5;244m'
+
+# Backgrounds for statuses
+bg_crit='\033[48;5;160;38;5;255;1m' # Red background
+bg_core='\033[48;5;237;38;5;214;1m' # Dark gray background
+
+# --- 2. Critical Package Configuration ---
+CRITICAL_PKGS=(
+    # --- Kernels & Headers ---
+    "linux-cachyos" "linux-cachyos-headers" "linux-cachyos-lts" "linux-cachyos-lts-headers"
+    "linux-cachyos-bore" "linux-cachyos-bore-headers" "linux-firmware" "intel-ucode" "amd-ucode"
+
+    # --- NVIDIA Specific ---
+    "linux-cachyos-nvidia-open" "linux-cachyos-nvidia"
+    "linux-cachyos-lts-nvidia-open" "linux-cachyos-lts-nvidia"
+    "nvidia-utils" "nvidia-settings" "lib32-nvidia-utils" "opencl-nvidia"
+
+    # --- Core System & Libraries ---
+    "systemd" "systemd-libs" "glibc" "gcc-libs" "openssl" "icu"
+    "util-linux" "libutil-linux" "zstd" "pacman" "dbus" "polkit"
+    "coreutils" "bash" "filesystem"
+
+    # --- Bootloaders ---
+    "grub" "limine" "efibootmgr" "mkinitcpio" "dracut"
+    "sdboot-manage" "systemd-boot" "os-prober"
+
+    # --- Graphics Stack ---
+    "mesa" "lib32-mesa" "vulkan-icd-loader" "lib32-vulkan-icd-loader"
+    "xf86-video-amdgpu" "vulkan-radeon" "lib32-vulkan-radeon"
+
+    # --- CachyOS Infrastructure ---
+    "cachyos-settings" "cachyos-hooks" "cachyos-keyring"
+    "cachyos-mirrorlist" "cachyos-v3-mirrorlist" "cachyos-v4-mirrorlist"
+    "cachy-update" "ananicy-cpp" "scx-scheds"
+
+    # --- Desktop & Display Managers ---
+    "hyprland" "plasma-desktop" "gnome-shell" "sway"
+    "xorg-server" "wayland" "sddm" "gdm"
+
+    # --- Networking ---
+    "networkmanager" "iwd"
+)
+
+declare -A CRIT_MAP
+for pkg in "${CRITICAL_PKGS[@]}"; do CRIT_MAP["$pkg"]=1; done
+
+# --- 3. Temporary Files ---
+OUTPUT_FILE=$(mktemp)
+trap 'rm -f "$OUTPUT_FILE"' EXIT
+
+# --- 4. Helper Functions ---
+get_update_type() {
+    local old=$1 new=$2
+    # Remove epoch
+    local v_old=${old#*:}
+    local v_new=${new#*:}
+
+    # Check Epoch
+    if [[ "$old" == *":"* || "$new" == *":"* ]]; then
+        local e_old=${old%%:*}
+        local e_new=${new%%:*}
+        [[ "$e_old" != "$e_new" ]] && { echo "EPOCH"; return; }
+    fi
+
+    IFS='.' read -ra ADDR_OLD <<< "${v_old//-/.}"
+    IFS='.' read -ra ADDR_NEW <<< "${v_new//-/.}"
+
+    if [[ "${ADDR_OLD[0]}" != "${ADDR_NEW[0]}" ]]; then echo "MAJOR"
+    elif [[ "${ADDR_OLD[1]}" != "${ADDR_NEW[1]}" ]]; then echo "MINOR"
+    else echo "Patch"; fi
+}
+
+get_type_color() {
+    case $1 in
+        "MAJOR") echo "$red$bold" ;;
+        "MINOR") echo "$cyan" ;;
+        "EPOCH") echo "$magenta" ;;
+        *) echo "$gray" ;;
+    esac
+}
+
+# --- 5. Main Logic ---
+echo -e "\n${blue}${bold}  󰚰  Checking for updates...${reset}"
+
+# 1. Create a temporary directory for the sync database
+CHECK_DB=$(mktemp -d /tmp/checkupdates-db.XXXXXX)
+
+# Ensure cleanup on exit (using sudo because the folder will be owned by root)
+trap 'sudo rm -rf "$CHECK_DB"; rm -f "$OUTPUT_FILE"' EXIT
+
+# 2. Symlink the local database so pacman knows which packages are currently installed
+ln -s /var/lib/pacman/local "$CHECK_DB/local" > /dev/null 2>&1
+
+# 3. Fix Permissions
+sudo chown -R root:root "$CHECK_DB"
+sudo chmod 755 "$CHECK_DB"
+
+# 4. Synchronize the TEMPORARY database
+if ! sudo pacman -Sy --dbpath "$CHECK_DB" --logfile /dev/null > /dev/null 2>&1; then
+    echo -e "${red}Error: Could not sync databases.${reset}"
+    exit 1
+fi
+
+# 5. Get the list of updates
+updates=$(LC_ALL=C pacman -Qu --dbpath "$CHECK_DB" --color never)
+
+if [[ -z "$updates" ]]; then
+    echo -e "${green}  ✔ System is fully up to date.${reset}\n"
+    exit 0
+fi
+
+pkg_count=$(echo "$updates" | wc -l)
+echo -e "${blue}${bold}  󰑮  Analyzing updates: ${white}$pkg_count packages${reset}"
+
+# --- Optimization: Batch fetch build dates ---
+all_pkgs=$(echo "$updates" | awk '{print $1}')
+declare -A BUILD_DATES
+while IFS='|' read -r name date; do
+    [[ -z "${BUILD_DATES[$name]}" ]] && BUILD_DATES["$name"]="$date"
+done < <(LC_ALL=C pacman -Si --dbpath "$CHECK_DB" --color never $all_pkgs 2>/dev/null | awk -F': ' '/^Name/ {n=$2} /^Build Date/ {print n "|" $2}')
+
+now=$(date +%s)
+current_idx=0
+
+# Track Max Lengths for Alignment
+max_name=7  # "PACKAGE"
+max_old=3   # "OLD"
+max_new=3   # "NEW"
+
+# Process Updates
+while read -r line; do
+    ((current_idx++))
+    percent=$(( current_idx * 100 / pkg_count ))
+
+    # Simple progress bar
+    filled=$(( percent / 5 ))
+    empty=$(( 20 - filled ))
+    printf "\r\033[2K  ${gray}Analysis: ${blue}["
+    printf "%${filled}s" | tr ' ' '='
+    printf ">"
+    printf "%${empty}s" | tr ' ' '-'
+    printf "] ${percent}%%${reset}"
+
+    pkgname=$(echo "$line" | awk '{print $1}')
+    old_ver=$(echo "$line" | awk '{print $2}')
+    new_ver=$(echo "$line" | awk '{print $4}')
+
+    # Update lengths
+    (( ${#pkgname} > max_name )) && max_name=${#pkgname}
+    (( ${#old_ver} > max_old )) && max_old=${#old_ver}
+    (( ${#new_ver} > max_new )) && max_new=${#new_ver}
+
+    raw_date="${BUILD_DATES[$pkgname]}"
+
+    # Calculate Age
+    diff_hours=9999
+    if [[ -n "$raw_date" ]]; then
+        build_time=$(date -d "$raw_date" +%s 2>/dev/null || echo 0)
+        diff_hours=$(( (now - build_time) / 3600 ))
+    fi
+
+    # Determine Priority
+    is_crit=0
+    [[ ${CRIT_MAP["$pkgname"]} ]] && is_crit=1
+
+    # Update Type
+    upd_type=$(get_update_type "$old_ver" "$new_ver")
+
+    # Sort Key: Priority (Crit=0) then Age (Oldest first)
+    sort_prio=$(( 1 - is_crit ))
+    sort_key=$(printf "%d.%05d" "$sort_prio" "$diff_hours")
+
+    # Write raw data (Tab separated) to temp file
+    # Fields: Key, DiffHours, IsCrit, Type, PkgName, OldVer, NewVer, RawDate
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+        "$sort_key" "$diff_hours" "$is_crit" "$upd_type" "$pkgname" "$old_ver" "$new_ver" "$raw_date" >> "$OUTPUT_FILE"
+
+done <<< "$updates"
+
+echo -e "\n"
+
+# --- 6. Table Output ---
+
+# Width calculations
+w_age=6
+w_stat=8
+w_type=5
+w_name=$(( max_name ))
+w_old=$(( max_old ))
+w_new=$(( max_new ))
+
+# Separator
+total_width=$(( w_age + 1 + w_stat + 1 + w_type + 1 + w_name + 1 + w_old + 3 + w_new + 1 + 15 ))
+# Clamp to terminal width
+term_cols=$(tput cols)
+[[ $total_width -gt $term_cols ]] && total_width=$term_cols
+
+sep_line=$(printf "%${total_width}s" | tr ' ' '-')
+
+# Header
+printf "${dim}%s${reset}\n" "$sep_line"
+# Note: "OLD" is right aligned, "NEW" is left aligned around the arrow
+printf "${bold}${gray}%-${w_age}s %-${w_stat}s %-${w_type}s %-${w_name}s %${w_old}s   %-${w_new}s %s${reset}\n" \
+    "AGE" "STATUS" "TYPE" "PACKAGE" "OLD" "NEW" "BUILD DATE"
+printf "${dim}%s${reset}\n" "$sep_line"
+
+# Output Rows
+sort -n "$OUTPUT_FILE" | while IFS=$'\t' read -r key diff_hours is_crit upd_type pkgname old_ver new_ver raw_date; do
+
+    # 1. Format Age
+    if (( diff_hours == 9999 )); then
+        age_disp="[?]"
+        age_col=$dim
+    else
+        age_disp="[${diff_hours}h]"
+        if (( diff_hours < 12 )); then age_col="${red}${bold}"
+        elif (( diff_hours < 48 )); then age_col="${yellow}"
+        else age_col="${green}"; fi
+    fi
+    # Print formatted age variable
+    printf -v f_age "%-${w_age}s" "$age_disp"
+    out_age="${age_col}${f_age}${reset}"
+
+    # 2. Format Status
+    if (( is_crit == 1 )); then
+        if (( diff_hours < 24 )); then
+            out_stat="${bg_crit} ! CRIT ${reset}"
+        else
+            out_stat="${bg_core}  CORE  ${reset}"
+        fi
+    else
+        out_stat="$(printf "%-${w_stat}s" " ")"
+    fi
+
+    # 3. Format Type
+    type_col=$(get_type_color "$upd_type")
+    printf -v f_type "%-${w_type}s" "$upd_type"
+    out_type="${type_col}${f_type}${reset}"
+
+    # 4. Format Date
+    if [[ -n "$raw_date" ]]; then
+        f_date=$(LC_TIME=C date -d "$raw_date" "+%d %b %H:%M" 2>/dev/null)
+        out_date="${dim}${f_date}${reset}"
+    else
+        out_date=""
+    fi
+
+    # 5. Print Line
+    # Structure: AGE | STAT | TYPE | NAME | OLD_VER -> NEW_VER | DATE
+    # Colors are applied OUTSIDE the width specifiers for proper alignment
+    printf "%b %b %b ${bold}${white}%-${w_name}s${reset} ${gray}%${w_old}s${reset} ${blue}→${reset} ${white}%-${w_new}s${reset} %b\n" \
+        "$out_age" \
+        "$out_stat" \
+        "$out_type" \
+        "$pkgname" \
+        "$old_ver" \
+        "$new_ver" \
+        "$out_date"
+
+done
+
+printf "${dim}%s${reset}\n" "$sep_line"
+
+# --- 7. Update Request ---
+UPD_CMD="topgrade"
+if ! command -v topgrade &> /dev/null; then
+    UPD_CMD="sudo pacman -Syu"
+fi
+
+echo -ne "\n  ${bold}${white}Apply updates?${reset} ${dim}(${UPD_CMD})${reset} [Y/n]: "
+read -r answer
+if [[ "$answer" =~ ^[Yy]$ || -z "$answer" ]]; then
+    echo -e "\n"
+    $UPD_CMD
+else
+    echo -e "  ${yellow}Operation cancelled.${reset}\n"
+fi
