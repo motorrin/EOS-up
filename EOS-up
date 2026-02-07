@@ -19,39 +19,56 @@ bg_core='\033[48;5;237;38;5;214;1m' # Dark gray background
 
 # --- 2. Critical Package Configuration ---
 CRITICAL_PKGS=(
-    # --- Kernels & Headers ---
-    "linux-cachyos" "linux-cachyos-headers" "linux-cachyos-lts" "linux-cachyos-lts-headers"
-    "linux-cachyos-bore" "linux-cachyos-bore-headers" "linux-firmware" "intel-ucode" "amd-ucode"
+    # --- Kernels & Microcode ---
+    "linux" "linux-headers"
+    "linux-lts" "linux-lts-headers"
+    "linux-zen" "linux-zen-headers"
+    "linux-hardened" "linux-hardened-headers"
+    "linux-firmware" "intel-ucode" "amd-ucode"
 
-    # --- NVIDIA Specific ---
-    "linux-cachyos-nvidia-open" "linux-cachyos-nvidia"
-    "linux-cachyos-lts-nvidia-open" "linux-cachyos-lts-nvidia"
-    "nvidia-utils" "nvidia-settings" "lib32-nvidia-utils" "opencl-nvidia"
+    # --- NVIDIA Drivers ---
+    "nvidia" "nvidia-lts" "nvidia-dkms"
+    "nvidia-open" "nvidia-open-lts" "nvidia-open-dkms"
+    "nvidia-utils" "nvidia-settings" "lib32-nvidia-utils"
+    "opencl-nvidia" "lib32-opencl-nvidia"
 
-    # --- Core System & Libraries ---
-    "systemd" "systemd-libs" "glibc" "gcc-libs" "openssl" "icu"
-    "util-linux" "libutil-linux" "zstd" "pacman" "dbus" "polkit"
-    "coreutils" "bash" "filesystem"
+    # --- Systemd & Init ---
+    "systemd" "systemd-libs" "systemd-sysvcompat"
+    "systemd-resolvconf"
+    "lib32-systemd"
+    "systemd-boot"
+    "systemd-ukify"
+
+    # --- Core System & Base ---
+    "base" "base-devel" "filesystem"
+    "glibc" "gcc-libs" "openssl" "coreutils"
+    "bash" "zsh" "sudo" "polkit" "shadow"
+    "cryptsetup" "device-mapper"
+
+    # --- Package Management & Keyrings ---
+    "pacman" "pacman-contrib"
+    "archlinux-keyring" "endeavouros-keyring"
+    "yay" "paru"
+
+    # --- EndeavourOS Specific ---
+    "eos-update" "eos-hooks" "endeavouros-theming"
+    "welcome" "eos-apps-info" "eos-rankmirrors"
 
     # --- Bootloaders ---
-    "grub" "limine" "efibootmgr" "mkinitcpio" "dracut"
-    "sdboot-manage" "systemd-boot" "os-prober"
+    "grub" "efibootmgr" "os-prober"
+    "mkinitcpio" "dracut"
 
     # --- Graphics Stack ---
     "mesa" "lib32-mesa" "vulkan-icd-loader" "lib32-vulkan-icd-loader"
-    "xf86-video-amdgpu" "vulkan-radeon" "lib32-vulkan-radeon"
+    "xorg-server" "wayland" "wayland-protocols"
+    "xf86-video-amdgpu" "xf86-video-intel" "vulkan-radeon"
 
-    # --- CachyOS Infrastructure ---
-    "cachyos-settings" "cachyos-hooks" "cachyos-keyring"
-    "cachyos-mirrorlist" "cachyos-v3-mirrorlist" "cachyos-v4-mirrorlist"
-    "cachy-update" "ananicy-cpp" "scx-scheds"
+    # --- KDE ---
+    "plasma-desktop" "kwin" "sddm" "plasma-wayland-session"
 
-    # --- Desktop & Display Managers ---
-    "hyprland" "plasma-desktop" "gnome-shell" "sway"
-    "xorg-server" "wayland" "sddm" "gdm"
-
-    # --- Networking ---
-    "networkmanager" "iwd"
+    # --- Audio & Networking ---
+    "pipewire" "pipewire-audio" "wireplumber" "pipewire-pulse"
+    "networkmanager" "iwd" "bluez"
 )
 
 declare -A CRIT_MAP
@@ -275,16 +292,45 @@ done
 printf "${dim}%s${reset}\n" "$sep_line"
 
 # --- 7. Update Request ---
-UPD_CMD="topgrade"
-if ! command -v topgrade &> /dev/null; then
-    UPD_CMD="sudo pacman -Syu"
+
+# Checking commands
+if command -v eos-update &> /dev/null; then
+    CORE_CMD="eos-update"
+else
+    CORE_CMD="sudo pacman -Syu"
 fi
 
-echo -ne "\n  ${bold}${white}Apply updates?${reset} ${dim}(${UPD_CMD})${reset} [Y/n]: "
+EXTRA_CMD=""
+if command -v topgrade &> /dev/null; then
+    EXTRA_CMD="topgrade"
+fi
+
+# Forming a query string for the user
+if [[ -n "$EXTRA_CMD" ]]; then
+    PROMPT_CMD="${CORE_CMD} && ${EXTRA_CMD}"
+else
+    PROMPT_CMD="${CORE_CMD}"
+fi
+
+echo -ne "\n  ${bold}${white}Apply updates?${reset} ${dim}(${PROMPT_CMD})${reset} [Y/n]: "
 read -r answer
+
 if [[ "$answer" =~ ^[Yy]$ || -z "$answer" ]]; then
     echo -e "\n"
-    $UPD_CMD
+
+    # 1. Running a major system update (eos-update)
+    $CORE_CMD
+
+    # Saving the return code
+    if [[ $? -eq 0 ]]; then
+        # 2. Launching Topgrade (if installed)
+        if [[ -n "$EXTRA_CMD" ]]; then
+            echo -e "\n${blue}${bold}  󰚰  System update complete. Running Topgrade for extras...${reset}\n"
+            $EXTRA_CMD
+        fi
+    else
+        echo -e "\n${red}  ✘ Core update failed or cancelled. Skipping Topgrade.${reset}\n"
+    fi
 else
     echo -e "  ${yellow}Operation cancelled.${reset}\n"
 fi
