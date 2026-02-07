@@ -19,14 +19,14 @@ bg_core='\033[48;5;237;38;5;214;1m' # Dark gray background
 
 # --- 2. Critical Package Configuration ---
 CRITICAL_PKGS=(
-    # --- Kernels & Microcode ---
+    # --- Kernels & Microcode (AMD CPU) ---
     "linux" "linux-headers"
     "linux-lts" "linux-lts-headers"
     "linux-zen" "linux-zen-headers"
     "linux-hardened" "linux-hardened-headers"
-    "linux-firmware" "intel-ucode" "amd-ucode"
+    "linux-firmware" "amd-ucode"
 
-    # --- NVIDIA Drivers ---
+    # --- NVIDIA Drivers (Discrete GPU) ---
     "nvidia" "nvidia-lts" "nvidia-dkms"
     "nvidia-open" "nvidia-open-lts" "nvidia-open-dkms"
     "nvidia-utils" "nvidia-settings" "lib32-nvidia-utils"
@@ -36,39 +36,58 @@ CRITICAL_PKGS=(
     "systemd" "systemd-libs" "systemd-sysvcompat"
     "systemd-resolvconf"
     "lib32-systemd"
-    "systemd-boot"
-    "systemd-ukify"
+    "systemd-boot" "systemd-ukify"
 
     # --- Core System & Base ---
     "base" "base-devel" "filesystem"
-    "glibc" "gcc-libs" "openssl" "coreutils"
+    "glibc" "lib32-glibc" "dbus"
+    "gcc-libs" "lib32-gcc-libs" "util-linux"
+    "libutil-linux" "openssl" "coreutils" "icu"
     "bash" "zsh" "sudo" "polkit" "shadow"
-    "cryptsetup" "device-mapper"
+    "cryptsetup" "device-mapper" "zstd"
 
-    # --- Package Management & Keyrings ---
-    "pacman" "pacman-contrib"
+    # --- Package Management ---
+    "pacman" "pacman-contrib" "pacman-mirrorlist"
     "archlinux-keyring" "endeavouros-keyring"
     "yay" "paru"
 
     # --- EndeavourOS Specific ---
     "eos-update" "eos-hooks" "endeavouros-theming"
     "welcome" "eos-apps-info" "eos-rankmirrors"
+    "eos-sddm-theme"
 
     # --- Bootloaders ---
     "grub" "efibootmgr" "os-prober"
     "mkinitcpio" "dracut"
 
-    # --- Graphics Stack ---
+    # --- Graphics Stack (AMD iGPU + Core) ---
     "mesa" "lib32-mesa" "vulkan-icd-loader" "lib32-vulkan-icd-loader"
-    "xorg-server" "wayland" "wayland-protocols"
-    "xf86-video-amdgpu" "xf86-video-intel" "vulkan-radeon"
+    "xorg-server" "xorg-xwayland" "wayland" "wayland-protocols"
 
-    # --- KDE ---
-    "plasma-desktop" "kwin" "sddm" "plasma-wayland-session"
+    # AMD Drivers (iGPU)
+    "xf86-video-amdgpu"
+    "vulkan-radeon" "lib32-vulkan-radeon"
+
+    # Hardware Video Acceleration (AMD)
+    "libva-mesa-driver" "lib32-libva-mesa-driver" "mesa-vdpau"
+
+    # --- KDE Plasma (Desktop Environment) ---
+    "plasma-desktop" "plasma-workspace" "kwin"
+    "systemsettings" "sddm" "plasma-wayland-session"
+    "kde-cli-tools" "powerdevil"
+
+    # Frameworks & Libraries (Qt/Wayland/Nvidia compat)
+    "qt6-base" "qt5-base" "kwayland" "egl-wayland"
+
+    # Hybrid Graphics Switcher
+    "switcheroo-control" "envycontrol" "optimus-manager"
+
+    # Core Apps
+    "dolphin" "konsole"
 
     # --- Audio & Networking ---
-    "pipewire" "pipewire-audio" "wireplumber" "pipewire-pulse"
-    "networkmanager" "iwd" "bluez"
+    "pipewire" "pipewire-audio" "wireplumber" "pipewire-pulse" "lib32-pipewire"
+    "networkmanager" "iwd" "bluez" "bluez-utils"
 )
 
 declare -A CRIT_MAP
