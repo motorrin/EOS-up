@@ -98,28 +98,56 @@ trap 'rm -f "$OUTPUT_FILE"' EXIT
 # --- 4. Helper Functions ---
 get_update_type() {
     local old=$1 new=$2
-    # Remove epoch
+
+    # 1. Remove Epoch
     local v_old=${old#*:}
     local v_new=${new#*:}
 
-    # Check Epoch
+    # Check Epoch change
     if [[ "$old" == *":"* || "$new" == *":"* ]]; then
         local e_old=${old%%:*}
         local e_new=${new%%:*}
         [[ "$e_old" != "$e_new" ]] && { echo "EPOCH"; return; }
     fi
 
-    IFS='.' read -ra ADDR_OLD <<< "${v_old//-/.}"
-    IFS='.' read -ra ADDR_NEW <<< "${v_new//-/.}"
+    # 2. Normalize and convert to integer arrays
+    local nums_old=($(echo "$v_old" | sed 's/[^0-9]/ /g'))
+    local nums_new=($(echo "$v_new" | sed 's/[^0-9]/ /g'))
 
-    if [[ "${ADDR_OLD[0]}" != "${ADDR_NEW[0]}" ]]; then echo "MAJOR"
-    elif [[ "${ADDR_OLD[1]}" != "${ADDR_NEW[1]}" ]]; then echo "MINOR"
-    else echo "Patch"; fi
+    # 3. Iterative comparison
+    local len=${#nums_new[@]}
+    for (( i=0; i<len; i++ )); do
+        local n_old=${nums_old[$i]}
+        local n_new=${nums_new[$i]}
+
+        # If old version had fewer segments, treat as minor/patch
+        [[ -z "$n_old" ]] && { echo "MINOR"; return; }
+
+        if (( 10#$n_old != 10#$n_new )); then
+
+            if (( 10#$n_new >= 2020 && 10#$n_new <= 2100 )); then
+                echo "CALVER"
+                return
+            fi
+
+            if (( i == 0 )); then
+                echo "MAJOR"
+            elif (( i == 1 )); then
+                echo "MINOR"
+            else
+                echo "Patch"
+            fi
+            return
+        fi
+    done
+
+    echo "Patch"
 }
 
 get_type_color() {
     case $1 in
         "MAJOR") echo "$red$bold" ;;
+        "CALVER") echo "$blue$bold" ;;
         "MINOR") echo "$cyan" ;;
         "EPOCH") echo "$magenta" ;;
         *) echo "$gray" ;;
