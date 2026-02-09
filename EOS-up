@@ -154,29 +154,70 @@ get_type_color() {
     esac
 }
 
+check_arch_news() {
+    echo -ne "${gray}  Checking Arch News... ${reset}"
+
+    if raw_rss=$(curl -sf --connect-timeout 2 --max-time 3 https://archlinux.org/feeds/news/); then
+        # Safely extracting the date (head -n 1 ensures we only take the first entry)
+        raw_date=$(echo "$raw_rss" | grep -oP '(?<=<pubDate>).*?(?=</pubDate>)' | head -n 1)
+
+        if [[ -n "$raw_date" ]]; then
+            # Force the use of the C locale to correctly parse dates from RSS
+            news_time=$(LC_TIME=C date -d "$raw_date" +%s 2>/dev/null)
+
+            if [[ -n "$news_time" ]]; then
+                now_time=$(date +%s)
+                diff_hours=$(( (now_time - news_time) / 3600 ))
+
+                if (( diff_hours < 48 )); then
+                    echo -e "\r\033[2K${red}${bold}  ⚠ WARNING: Fresh Arch News detected ($diff_hours h ago)!${reset}"
+                    echo -e "  ${red}  Check https://archlinux.org/ before updating.${reset}\n"
+                    return
+                else
+                    echo -e "\r\033[2K${green}  ✔ No fresh Arch News (last: ${diff_hours}h ago).${reset}\n"
+                    return
+                fi
+            fi
+        fi
+    fi
+
+    # Fallback message
+    echo -e "\r\033[2K${dim}  ? Could not check Arch News (Connection or parsing error).${reset}\n"
+}
+
 # --- 5. Main Logic ---
+
+# 0. Refresh sudo credentials upfront to prevent password prompt from breaking the UI later
+if ! sudo -v; then
+    echo -e "${red}Error: Sudo authentication failed.${reset}"
+    exit 1
+fi
+
 echo -e "\n${blue}${bold}  󰚰  Checking for updates...${reset}"
 
-# 1. Create a temporary directory for the sync database
+# 1. Check Arch News
+check_arch_news
+
+# 2. Create a temporary directory for the sync database
 CHECK_DB=$(mktemp -d /tmp/checkupdates-db.XXXXXX)
 
-# Ensure cleanup on exit (using sudo because the folder will be owned by root)
+# Ensure cleanup on exit
 trap 'sudo rm -rf "$CHECK_DB"; rm -f "$OUTPUT_FILE"' EXIT
 
-# 2. Symlink the local database so pacman knows which packages are currently installed
+# 3. Symlink the local database
 ln -s /var/lib/pacman/local "$CHECK_DB/local" > /dev/null 2>&1
 
-# 3. Fix Permissions
+# 4. Fix Permissions
 sudo chown -R root:root "$CHECK_DB"
 sudo chmod 755 "$CHECK_DB"
 
-# 4. Synchronize the TEMPORARY database
+# 5. Synchronize the TEMPORARY database
 if ! sudo pacman -Sy --dbpath "$CHECK_DB" --logfile /dev/null > /dev/null 2>&1; then
     echo -e "${red}Error: Could not sync databases.${reset}"
     exit 1
 fi
 
-# 5. Get the list of updates
+# 6. Get the list of updates
 updates=$(LC_ALL=C pacman -Qu --dbpath "$CHECK_DB" --color never)
 
 if [[ -z "$updates" ]]; then
@@ -187,50 +228,111 @@ fi
 pkg_count=$(echo "$updates" | wc -l)
 echo -e "${blue}${bold}  󰑮  Analyzing updates: ${white}$pkg_count packages${reset}"
 
-# --- Optimization: Batch fetch build dates ---
+# --- Optimization: Batch fetch extended info ---
 all_pkgs=$(echo "$updates" | awk '{print $1}')
-declare -A BUILD_DATES
-while IFS='|' read -r name date; do
-    [[ -z "${BUILD_DATES[$name]}" ]] && BUILD_DATES["$name"]="$date"
-done < <(LC_ALL=C pacman -Si --dbpath "$CHECK_DB" --color never $all_pkgs 2>/dev/null | awk -F': ' '/^Name/ {n=$2} /^Build Date/ {print n "|" $2}')
+
+# 1. New Package Data (Repo | BuildDate | Size | Description)
+declare -A NEW_DATA
+# Using the ~|~ separator. Added removal of '~' in description to prevent collisions
+while IFS='' read -r line; do
+    name=${line%%~|~*}
+    rest=${line#*~|~}
+    NEW_DATA["$name"]="$rest"
+done < <(LC_ALL=C pacman -Si --dbpath "$CHECK_DB" --color never $all_pkgs 2>/dev/null | awk -F': ' '
+    /^Name/ {n=$2}
+    /^Repository/ {r=$2}
+    /^Build Date/ {b=$2}
+    /^Download Size/ {s=$2}
+    /^Description/ {
+        d=$2
+        # Description cleanup: replacing |, tab, and ~ with spaces to preserve structure
+        gsub(/[|\t~]/, " ", d)
+    }
+    /^$/ {
+        if (n) {
+            print n "~|~" r "|" b "|" s "|" d
+            n=""
+        }
+    }
+    END {
+        if (n) print n "~|~" r "|" b "|" s "|" d
+    }
+')
+
+# 2. Old Package Data (BuildDate | InstallReason)
+declare -A OLD_DATA
+while IFS='|' read -r name bdate reason; do
+    [[ -z "${OLD_DATA[$name]}" ]] && OLD_DATA["$name"]="$bdate|$reason"
+done < <(LC_ALL=C pacman -Qi $all_pkgs 2>/dev/null | awk -F': ' '
+    /^Name/ {n=$2}
+    /^Build Date/ {b=$2}
+    /^Install Reason/ {r=$2}
+    /^$/ {if (n) print n "|" b "|" r; n=""}
+')
+
+# Calculate Total Download Size (KiB/MiB/GiB -> MiB)
+total_download_size=$(LC_ALL=C pacman -Si --dbpath "$CHECK_DB" $all_pkgs 2>/dev/null | awk '
+    /^Download Size/ {
+        val=$4
+        unit=$5
+        if (unit == "KiB") val /= 1024
+        else if (unit == "GiB") val *= 1024
+        sum += val
+    }
+    END {
+        if (sum > 1024) printf "%.2f GiB", sum/1024
+        else printf "%.2f MiB", sum
+    }
+')
 
 now=$(date +%s)
 current_idx=0
 
-# Track Max Lengths for Alignment
-max_name=7  # "PACKAGE"
-max_old=3   # "OLD"
-max_new=3   # "NEW"
+# Track Max Lengths
+max_name=7
+max_old=3
+max_new=3
+max_repo=4
+max_size=4
 
-# Process Updates
 while read -r line; do
     ((current_idx++))
     percent=$(( current_idx * 100 / pkg_count ))
 
-    # Simple progress bar
-    filled=$(( percent / 5 ))
-    empty=$(( 20 - filled ))
-    printf "\r\033[2K  ${gray}Analysis: ${blue}["
-    printf "%${filled}s" | tr ' ' '='
-    printf ">"
-    printf "%${empty}s" | tr ' ' '-'
-    printf "] ${percent}%%${reset}"
+    # Update UI only every 5% or on last item to speed up loop
+    if (( percent % 5 == 0 || current_idx == pkg_count )); then
+        filled=$(( percent / 5 ))
+        empty=$(( 20 - filled ))
+        printf "\r\033[2K  ${gray}Analysis: ${blue}["
+        printf "%${filled}s" | tr ' ' '='
+        printf ">"
+        printf "%${empty}s" | tr ' ' '-'
+        printf "] ${percent}%%${reset}"
+    fi
 
     pkgname=$(echo "$line" | awk '{print $1}')
     old_ver=$(echo "$line" | awk '{print $2}')
     new_ver=$(echo "$line" | awk '{print $4}')
 
+    # Retrieve Data
+    IFS='|' read -r repo date_new size desc <<< "${NEW_DATA[$pkgname]}"
+    IFS='|' read -r date_old reason <<< "${OLD_DATA[$pkgname]}"
+
+    # Determine "Explicit" vs "Dependency"
+    is_explicit=0
+    [[ "$reason" == *"Explicitly"* ]] && is_explicit=1
+
     # Update lengths
     (( ${#pkgname} > max_name )) && max_name=${#pkgname}
     (( ${#old_ver} > max_old )) && max_old=${#old_ver}
     (( ${#new_ver} > max_new )) && max_new=${#new_ver}
-
-    raw_date="${BUILD_DATES[$pkgname]}"
+    (( ${#repo} > max_repo )) && max_repo=${#repo}
+    (( ${#size} > max_size )) && max_size=${#size}
 
     # Calculate Age
     diff_hours=9999
-    if [[ -n "$raw_date" ]]; then
-        build_time=$(date -d "$raw_date" +%s 2>/dev/null || echo 0)
+    if [[ -n "$date_new" ]]; then
+        build_time=$(date -d "$date_new" +%s 2>/dev/null || echo 0)
         diff_hours=$(( (now - build_time) / 3600 ))
     fi
 
@@ -238,17 +340,16 @@ while read -r line; do
     is_crit=0
     [[ ${CRIT_MAP["$pkgname"]} ]] && is_crit=1
 
-    # Update Type
     upd_type=$(get_update_type "$old_ver" "$new_ver")
 
-    # Sort Key: Priority (Crit=0) then Age (Oldest first)
+    # Sort Key
     sort_prio=$(( 1 - is_crit ))
     sort_key=$(printf "%d.%05d" "$sort_prio" "$diff_hours")
 
-    # Write raw data (Tab separated) to temp file
-    # Fields: Key, DiffHours, IsCrit, Type, PkgName, OldVer, NewVer, RawDate
-    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-        "$sort_key" "$diff_hours" "$is_crit" "$upd_type" "$pkgname" "$old_ver" "$new_ver" "$raw_date" >> "$OUTPUT_FILE"
+    # Write to Temp
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+        "$sort_key" "$diff_hours" "$is_crit" "$upd_type" "$pkgname" "$old_ver" "$new_ver" \
+        "$repo" "$size" "$is_explicit" "$date_old" "$date_new" "$desc" >> "$OUTPUT_FILE"
 
 done <<< "$updates"
 
@@ -256,87 +357,149 @@ echo -e "\n"
 
 # --- 6. Table Output ---
 
-# Width calculations
 w_age=6
 w_stat=8
+w_repo=$(( max_repo ))
 w_type=6
 w_name=$(( max_name ))
 w_old=$(( max_old ))
 w_new=$(( max_new ))
+w_size=$(( max_size ))
+w_date=12
 
-# Separator
-total_width=$(( w_age + 1 + w_stat + 1 + w_type + 1 + w_name + 1 + w_old + 3 + w_new + 1 + 15 ))
-# Clamp to terminal width
+# Calculate remaining width for Description
 term_cols=$(tput cols)
-[[ $total_width -gt $term_cols ]] && total_width=$term_cols
+# The sum of all fixed margins and paddings
+used_width=$(( w_age + 1 + w_stat + 1 + w_repo + 1 + w_type + 1 + w_name + 1 + w_old + 3 + w_new + 1 + w_size + 1 + w_date + 1 ))
+w_desc=$(( term_cols - used_width - 1 ))
 
-sep_line=$(printf "%${total_width}s" | tr ' ' '-')
+# Protection against negative width on narrow screens
+if (( w_desc < 5 )); then
+    w_desc=0
+fi
+
+sep_line=$(printf "%${term_cols}s" | tr ' ' '-')
 
 # Header
 printf "${dim}%s${reset}\n" "$sep_line"
-# Note: "OLD" is right aligned, "NEW" is left aligned around the arrow
-printf "${bold}${gray}%-${w_age}s %-${w_stat}s %-${w_type}s %-${w_name}s %${w_old}s   %-${w_new}s %s${reset}\n" \
-    "AGE" "STATUS" "TYPE" "PACKAGE" "OLD" "NEW" "BUILD DATE"
+
+# Function for centering text
+fmt_center() {
+    local str="$1"
+    local width="$2"
+    local len=${#str}
+    if (( len >= width )); then
+        printf "%s" "$str"
+    else
+        local l_pad=$(( (width - len) / 2 ))
+        local r_pad=$(( width - len - l_pad ))
+        printf "%*s%s%*s" $l_pad "" "$str" $r_pad ""
+    fi
+}
+
+# Generating centered headings
+h_age=$(fmt_center "AGE" "$w_age")
+h_stat=$(fmt_center "STATUS" "$w_stat")
+h_repo=$(fmt_center "REPO" "$w_repo")
+h_type=$(fmt_center "TYPE" "$w_type")
+h_name=$(fmt_center "PACKAGE" "$w_name")
+h_old=$(fmt_center "OLD" "$w_old")
+h_new=$(fmt_center "NEW" "$w_new")
+h_size=$(fmt_center "SIZE" "$w_size")
+h_date=$(fmt_center "NEW DATE" "$w_date")
+
+# Description title (if there is space)
+h_desc="DESCRIPTION"
+(( w_desc == 0 )) && h_desc=""
+
+# Printing Headlines
+# There are spaces between %s that correspond to the indentations in the data lines.
+printf "${bold}${gray}%s %s %s %s %s %s   %s %s %s %s${reset}\n" \
+    "$h_age" "$h_stat" "$h_repo" "$h_type" "$h_name" "$h_old" "$h_new" "$h_size" "$h_date" "$h_desc"
+
 printf "${dim}%s${reset}\n" "$sep_line"
 
 # Output Rows
-sort -n "$OUTPUT_FILE" | while IFS=$'\t' read -r key diff_hours is_crit upd_type pkgname old_ver new_ver raw_date; do
+sort -n "$OUTPUT_FILE" | while IFS=$'\t' read -r key diff_hours is_crit upd_type pkgname old_ver new_ver repo size is_explicit date_old date_new desc; do
 
-    # 1. Format Age
-    if (( diff_hours == 9999 )); then
-        age_disp="[?]"
-        age_col=$dim
+    # 1. Age
+    if (( diff_hours == 9999 )); then age_disp="[?]"; age_col=$dim
     else
         age_disp="[${diff_hours}h]"
         if (( diff_hours < 12 )); then age_col="${red}${bold}"
         elif (( diff_hours < 48 )); then age_col="${yellow}"
         else age_col="${green}"; fi
     fi
-    # Print formatted age variable
     printf -v f_age "%-${w_age}s" "$age_disp"
     out_age="${age_col}${f_age}${reset}"
 
-    # 2. Format Status
+    # 2. Status
     if (( is_crit == 1 )); then
-        if (( diff_hours < 24 )); then
-            out_stat="${bg_crit} ! CRIT ${reset}"
-        else
-            out_stat="${bg_core}  CORE  ${reset}"
-        fi
-    else
-        out_stat="$(printf "%-${w_stat}s" " ")"
-    fi
+        if (( diff_hours < 24 )); then out_stat="${bg_crit} ! CRIT ${reset}"
+        else out_stat="${bg_core}  CORE  ${reset}"; fi
+    else out_stat="$(printf "%-${w_stat}s" " ")"; fi
 
-    # 3. Format Type
+    # 3. Repo (Dimmed) - Pad CONTENT, then color
+    printf -v f_repo "%-${w_repo}s" "$repo"
+    out_repo="${dim}${f_repo}${reset}"
+
+    # 4. Type
     type_col=$(get_type_color "$upd_type")
     printf -v f_type "%-${w_type}s" "$upd_type"
     out_type="${type_col}${f_type}${reset}"
 
-    # 4. Format Date
-    if [[ -n "$raw_date" ]]; then
-        f_date=$(LC_TIME=C date -d "$raw_date" "+%d %b %H:%M" 2>/dev/null)
-        out_date="${dim}${f_date}${reset}"
+    # 5. Name (Highlight if Explicit)
+    if (( is_explicit == 1 )); then
+        name_col="${white}${bold}"
     else
-        out_date=""
+        name_col="${gray}"
+    fi
+    printf -v f_name "%-${w_name}s" "$pkgname"
+    out_name="${name_col}${f_name}${reset}"
+
+    # 6. Dates (Fixed Width Alignment)
+    if [[ -n "$date_new" ]]; then
+        f_date_raw=$(LC_TIME=C date -d "$date_new" "+%d %b %H:%M" 2>/dev/null)
+    else
+        f_date_raw=""
+    fi
+    # Align the date line before adding colors
+    printf -v f_date_padded "%-${w_date}s" "$f_date_raw"
+    out_date_new="${dim}${f_date_padded}${reset}"
+
+    # 7. Size
+    printf -v f_size "%-${w_size}s" "$size"
+    out_size="${white}${f_size}${reset}"
+
+    # 8. Description (Truncated)
+    if (( w_desc > 0 )); then
+        if (( ${#desc} > w_desc )); then
+            out_desc="${dim}${desc:0:$((w_desc-1))}…${reset}"
+        else
+            out_desc="${dim}${desc}${reset}"
+        fi
+    else
+        out_desc=""
     fi
 
-    # 5. Print Line
-    # Structure: AGE | STAT | TYPE | NAME | OLD_VER -> NEW_VER | DATE
-    # Colors are applied OUTSIDE the width specifiers for proper alignment
-    printf "%b %b %b ${bold}${white}%-${w_name}s${reset} ${gray}%${w_old}s${reset} ${blue}→${reset} ${white}%-${w_new}s${reset} %b\n" \
-        "$out_age" \
-        "$out_stat" \
-        "$out_type" \
-        "$pkgname" \
-        "$old_ver" \
-        "$new_ver" \
-        "$out_date"
+    # Print Line
+    # Using %b for blocks containing color codes
+    printf "%b %b %b %b %b ${gray}%${w_old}s${reset} ${blue}→${reset} ${white}%-${w_new}s${reset} %b %b %b\n" \
+        "$out_age" "$out_stat" "$out_repo" "$out_type" "$out_name" \
+        "$old_ver" "$new_ver" "$out_size" "$out_date_new" "$out_desc"
 
 done
 
 printf "${dim}%s${reset}\n" "$sep_line"
+echo -e "  ${gray}Total Download Size: ${white}${bold}${total_download_size}${reset}"
 
 # --- 7. Update Request ---
+
+# Check for packages that require a reboot.
+# Expanded regex: matches kernels, nvidia, systemd, microcode, cryptsetup, glibc, firmware
+if awk -F'\t' '$5 ~ /^(linux.*|nvidia.*|systemd.*|.*-ucode|cryptsetup|glibc|linux-firmware)$/' "$OUTPUT_FILE" | grep -q .; then
+    echo -e "  ${red}${bold}⚠  Kernel/Core update detected. Reboot will be required!${reset}"
+fi
 
 # Checking commands
 if command -v eos-update &> /dev/null; then
@@ -363,7 +526,7 @@ read -r answer
 if [[ "$answer" =~ ^[Yy]$ || -z "$answer" ]]; then
     echo -e "\n"
 
-    # 1. Running a major system update (eos-update)
+    # 1. Running a major system update
     $CORE_CMD
 
     # Saving the return code
