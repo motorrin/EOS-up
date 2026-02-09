@@ -93,7 +93,18 @@ for pkg in "${CRITICAL_PKGS[@]}"; do CRIT_MAP["$pkg"]=1; done
 
 # --- 3. Temporary Files ---
 OUTPUT_FILE=$(mktemp)
-trap 'rm -f "$OUTPUT_FILE"' EXIT
+# Using mktemp -d safely
+if ! CHECK_DB=$(mktemp -d /tmp/checkupdates-db.XXXXXX); then
+    echo -e "${red}Error: Could not create temp db directory.${reset}"
+    exit 1
+fi
+
+# Safe cleaning
+cleanup() {
+    [[ -n "$CHECK_DB" && -d "$CHECK_DB" ]] && sudo rm -rf "$CHECK_DB"
+    [[ -f "$OUTPUT_FILE" ]] && rm -f "$OUTPUT_FILE"
+}
+trap cleanup EXIT
 
 # --- 4. Helper Functions ---
 get_update_type() {
@@ -157,9 +168,11 @@ get_type_color() {
 check_arch_news() {
     echo -ne "${gray}  Checking Arch News... ${reset}"
 
-    if raw_rss=$(curl -sf --connect-timeout 2 --max-time 3 https://archlinux.org/feeds/news/); then
-        # Safely extracting the date (head -n 1 ensures we only take the first entry)
-        raw_date=$(echo "$raw_rss" | grep -oP '(?<=<pubDate>).*?(?=</pubDate>)' | head -n 1)
+    # Use compressed transfer and simpler grep logic to find the first ITEM pubDate
+    if raw_rss=$(curl -sf --compressed --connect-timeout 2 --max-time 3 https://archlinux.org/feeds/news/); then
+        # Extract the first pubDate that appears inside an <item> block
+        # (The first pubDate in the file is usually the Channel Build Date, which updates constantly)
+        raw_date=$(echo "$raw_rss" | awk -F'<pubDate>' '/<item>/ {p=1} p && $2 {print $2; exit}' | awk -F'</pubDate>' '{print $1}')
 
         if [[ -n "$raw_date" ]]; then
             # Force the use of the C locale to correctly parse dates from RSS
@@ -198,26 +211,20 @@ echo -e "\n${blue}${bold}  󰚰  Checking for updates...${reset}"
 # 1. Check Arch News
 check_arch_news
 
-# 2. Create a temporary directory for the sync database
-CHECK_DB=$(mktemp -d /tmp/checkupdates-db.XXXXXX)
-
-# Ensure cleanup on exit
-trap 'sudo rm -rf "$CHECK_DB"; rm -f "$OUTPUT_FILE"' EXIT
-
-# 3. Symlink the local database
+# 2. Symlink the local database
 ln -s /var/lib/pacman/local "$CHECK_DB/local" > /dev/null 2>&1
 
-# 4. Fix Permissions
+# 3. Fix Permissions
 sudo chown -R root:root "$CHECK_DB"
 sudo chmod 755 "$CHECK_DB"
 
-# 5. Synchronize the TEMPORARY database
+# 4. Synchronize the TEMPORARY database
 if ! sudo pacman -Sy --dbpath "$CHECK_DB" --logfile /dev/null > /dev/null 2>&1; then
     echo -e "${red}Error: Could not sync databases.${reset}"
     exit 1
 fi
 
-# 6. Get the list of updates
+# 5. Get the list of updates
 updates=$(LC_ALL=C pacman -Qu --dbpath "$CHECK_DB" --color never)
 
 if [[ -z "$updates" ]]; then
@@ -512,14 +519,17 @@ if command -v topgrade &> /dev/null; then
     EXTRA_CMD="topgrade"
 fi
 
-# Forming a query string for the user
+# Forming a query string for the user (Restored executable command string)
 if [[ -n "$EXTRA_CMD" ]]; then
     PROMPT_CMD="${CORE_CMD} && ${EXTRA_CMD}"
 else
     PROMPT_CMD="${CORE_CMD}"
 fi
 
+sudo -v
+
 echo -ne "\n  ${bold}${white}Apply updates?${reset} ${dim}(${PROMPT_CMD})${reset} [Y/n]: "
+
 read -r answer
 
 if [[ "$answer" =~ ^[Yy]$ || -z "$answer" ]]; then
@@ -531,27 +541,28 @@ if [[ "$answer" =~ ^[Yy]$ || -z "$answer" ]]; then
     core_exit=$?
 
     # Checking if there are any updates left in the system
+    # This is the Source of Truth, independent of exit codes
     pending_updates=$(LC_ALL=C pacman -Qu 2>/dev/null)
 
     # Topgrade Launch Decision Logic
     run_extra=false
 
-    # SCENARIO A: The system is clean
+    # SCENARIO A: The system is clean (Updates successfully applied)
     if [[ -z "$pending_updates" ]]; then
         if [[ $core_exit -eq 0 ]]; then
             echo -e "\n${green}✔ Core updates applied successfully.${reset}"
             run_extra=true
         else
-            # Сode error, no updates
+            # Exit code was non-zero, but updates are gone (weird but success)
             echo -e "\n${green}✔ No core updates pending.${reset}"
             run_extra=true
         fi
 
-    # SCENARIO B: Updates are stuck
+    # SCENARIO B: Updates are stuck (Cancelled, Failed, or Partial)
     else
         echo -e "\n${yellow}⚠  Core updates were NOT fully applied (Cancelled or Failed).${reset}"
 
-        # If Topgrade is installed, ask whether to launch it
+        # If Topgrade is installed, ask whether to launch it manually
         if [[ -n "$EXTRA_CMD" ]]; then
             echo -ne "  ${white}Run ${EXTRA_CMD} anyway? (Flatpaks/AUR etc) [y/N]: ${reset}"
             read -r force_extra
@@ -568,6 +579,7 @@ if [[ "$answer" =~ ^[Yy]$ || -z "$answer" ]]; then
         echo -e "\n${blue}${bold}  󰚰  Running Topgrade...${reset}\n"
         $EXTRA_CMD
     elif [[ -n "$pending_updates" ]]; then
+        # Restored feedback for partial/cancelled state
         echo -e "\n${red}  ✘ System partially updated or update cancelled.${reset}\n"
     fi
 
