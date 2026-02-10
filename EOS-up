@@ -107,6 +107,10 @@ cleanup() {
 trap cleanup EXIT
 
 # --- 4. Helper Functions ---
+log_step() {
+    echo -e "${dim}[$(date +%T)] $1${reset}"
+}
+
 get_update_type() {
     local old=$1 new=$2
 
@@ -166,6 +170,7 @@ get_type_color() {
 }
 
 check_arch_news() {
+    log_step "Starting Arch News check (curl)..."
     echo -ne "${gray}  Checking Arch News... ${reset}"
 
     # Use compressed transfer and simpler grep logic to find the first ITEM pubDate
@@ -201,6 +206,7 @@ check_arch_news() {
 # --- 5. Main Logic ---
 
 # 0. Refresh sudo credentials upfront to prevent password prompt from breaking the UI later
+log_step "Requesting Sudo access..."
 if ! sudo -v; then
     echo -e "${red}Error: Sudo authentication failed.${reset}"
     exit 1
@@ -212,6 +218,7 @@ echo -e "\n${blue}${bold}  󰚰  Checking for updates...${reset}"
 check_arch_news
 
 # 2. Symlink the local database
+log_step "Symlinking local DB..."
 ln -s /var/lib/pacman/local "$CHECK_DB/local" > /dev/null 2>&1
 
 # 3. Fix Permissions
@@ -219,12 +226,14 @@ sudo chown -R root:root "$CHECK_DB"
 sudo chmod 755 "$CHECK_DB"
 
 # 4. Synchronize the TEMPORARY database
-if ! sudo pacman -Sy --dbpath "$CHECK_DB" --logfile /dev/null > /dev/null 2>&1; then
+log_step "Syncing temporary database (pacman -Sy)..."
+if ! sudo pacman -Sy --dbpath "$CHECK_DB" --logfile /dev/null; then
     echo -e "${red}Error: Could not sync databases.${reset}"
     exit 1
 fi
 
 # 5. Get the list of updates
+log_step "Calculating update list (pacman -Qu)..."
 updates=$(LC_ALL=C pacman -Qu --dbpath "$CHECK_DB" --color never)
 
 if [[ -z "$updates" ]]; then
@@ -233,12 +242,14 @@ if [[ -z "$updates" ]]; then
 fi
 
 pkg_count=$(echo "$updates" | wc -l)
+log_step "Found $pkg_count updates. Starting detailed analysis..."
 echo -e "${blue}${bold}  󰑮  Analyzing updates: ${white}$pkg_count packages${reset}"
 
 # --- Optimization: Batch fetch extended info ---
 all_pkgs=$(echo "$updates" | awk '{print $1}')
 
 # 1. New Package Data (Repo | BuildDate | Size | Description)
+log_step "Fetching remote metadata (pacman -Si)..."
 declare -A NEW_DATA
 # Using the ~|~ separator. Added removal of '~' in description to prevent collisions
 while IFS='' read -r line; do
@@ -267,6 +278,7 @@ done < <(LC_ALL=C pacman -Si --dbpath "$CHECK_DB" --color never $all_pkgs 2>/dev
 ')
 
 # 2. Old Package Data (BuildDate | InstallReason)
+log_step "Fetching local metadata (pacman -Qi)..."
 declare -A OLD_DATA
 while IFS='|' read -r name bdate reason; do
     [[ -z "${OLD_DATA[$name]}" ]] && OLD_DATA["$name"]="$bdate|$reason"
@@ -291,6 +303,8 @@ total_download_size=$(LC_ALL=C pacman -Si --dbpath "$CHECK_DB" $all_pkgs 2>/dev/
         else printf "%.2f MiB", sum
     }
 ')
+
+log_step "Processing data and calculating diffs..."
 
 now=$(date +%s)
 current_idx=0
