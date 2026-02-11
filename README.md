@@ -3,11 +3,10 @@
 This script is specifically tuned for **EndeavourOS** (or Arch Linux) running the **KDE Plasma** Desktop Environment.
 
 While the core update logic works on any Arch-based system, the **Critical Package List** (`CRITICAL_PKGS`) and **Reboot Detection** logic are optimized for:
-*   **OS:** EndeavourOS / Arch Linux
-*   **DE:** KDE Plasma 6 (Qt 6, Wayland/X11)
+*   **OS:** EndeavourOS
+*   **DE:** KDE Plasma 6 (Qt 6, Wayland)
 *   **GPU:** Nvidia (Proprietary/Open) & AMD (Mesa)
 *   **Shell:** Bash
-*   **Tools:** `eos-update` & `topgrade` (optional)
 
 *If you use GNOME, Hyprland, or a different setup, you may need to adjust the package lists in the script.*
 
