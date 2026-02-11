@@ -214,25 +214,32 @@ fi
 
 echo -e "\n${blue}${bold}  󰚰  Checking for updates...${reset}"
 
-# 1. Check Arch News
+# 1. Check for pacman lock
+if [[ -f /var/lib/pacman/db.lck ]]; then
+    echo -e "${red}Error: Pacman database is locked (/var/lib/pacman/db.lck).${reset}"
+    echo -e "${yellow}Another package manager process is running.${reset}"
+    exit 1
+fi
+
+# 2. Check Arch News
 check_arch_news
 
-# 2. Symlink the local database
+# 3. Symlink the local database
 log_step "Symlinking local DB..."
 ln -s /var/lib/pacman/local "$CHECK_DB/local" > /dev/null 2>&1
 
-# 3. Fix Permissions
+# 4. Fix Permissions
 sudo chown -R root:root "$CHECK_DB"
 sudo chmod 755 "$CHECK_DB"
 
-# 4. Synchronize the TEMPORARY database
+# 5. Synchronize the TEMPORARY database
 log_step "Syncing temporary database (pacman -Sy)..."
 if ! sudo pacman -Sy --dbpath "$CHECK_DB" --logfile /dev/null; then
     echo -e "${red}Error: Could not sync databases.${reset}"
     exit 1
 fi
 
-# 5. Get the list of updates
+# 6. Get the list of updates
 log_step "Calculating update list (pacman -Qu)..."
 updates=$(LC_ALL=C pacman -Qu --dbpath "$CHECK_DB" --color never)
 
