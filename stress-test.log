@@ -1,4 +1,7 @@
 # Since I don't use English localization, some text was manually translated.
+# This isn't script related, but on line 317 during the pacnew call I overwrote the /etc/locale.gen file with a new file.
+# NEVER DO THIS! It contains the system locales you selected during the distribution's installation.
+----------------------------------------------------------------------------------------------------
 
 [motorrin@motorrin ~]$ up
 [20:16:56] Requesting Sudo access...
