@@ -1,6 +1,6 @@
 # ❗ Compatibility Warning
 
-This script is specifically tuned for **EndeavourOS** (or Arch Linux) running the **KDE Plasma** Desktop Environment.
+This script is specifically tuned for **EndeavourOS** running the **KDE Plasma** Desktop Environment.
 
 While the core update logic works on any Arch-based system, the **Critical Package List** (`CRITICAL_PKGS`) and **Reboot Detection** logic are optimized for:
 *   **OS:** EndeavourOS
@@ -60,6 +60,8 @@ Smart heuristics to determine if a reboot is needed. It scans for updates to:
 •  pacman
 •  curl
 •  awk
+•  python
+•  (Optional) reflector
 •  (Optional) eos-update (EndeavourOS utils)
 •  (Optional) topgrade
 
