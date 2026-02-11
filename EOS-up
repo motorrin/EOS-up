@@ -222,7 +222,7 @@ refresh_mirrors() {
     echo -ne "  ${white}Refresh mirrors (Germany/Netherlands, HTTPS, Rate)? [Y/n]: ${reset}"
     read -r ans
     if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
-        echo -e "  ${blue}Running reflector...${reset}"
+        echo -e "  ${blue}Running reflector (WARNINGS ARE EXPECTED)${reset}"
         if command -v reflector &>/dev/null; then
             # Download timeout is 5 seconds to avoid getting stuck on dead mirrors.
             if sudo reflector --country Germany,Netherlands --protocol https --sort rate --save /etc/pacman.d/mirrorlist --download-timeout 5; then
