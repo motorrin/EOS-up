@@ -215,6 +215,35 @@ except Exception:
     fi
 }
 
+backup_pacman_db() {
+    local BACKUP_DIR="/var/lib/pacman/backup"
+    local KEEP_COPIES=5
+
+    log_step "Creating Pacman DB backup..."
+
+    if [[ ! -d "$BACKUP_DIR" ]]; then
+        sudo mkdir -p "$BACKUP_DIR"
+    fi
+
+    local BACKUP_DATE=$(date +%Y%m%d_%H%M%S)
+    local BACKUP_FILE="$BACKUP_DIR/pacman_database_$BACKUP_DATE.tar.gz"
+
+    if sudo tar -czf "$BACKUP_FILE" -C /var/lib/pacman/ local; then
+        echo -e "  ${green}✔ Backup created: ${white}$(basename "$BACKUP_FILE")${reset}"
+
+        sudo ls -tp "$BACKUP_DIR" | grep -v '/$' | tail -n +$((KEEP_COPIES + 1)) | while read -r old_backup; do
+            sudo rm "$BACKUP_DIR/$old_backup"
+        done
+    else
+        echo -e "  ${red}✘ Failed to create backup!${reset}"
+        echo -ne "  ${yellow}Continue anyway? [y/N]: ${reset}"
+        read -r cont
+        if [[ ! "$cont" =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
+    fi
+}
+
 # --- 5. Mirror Refresh Function ---
 refresh_mirrors() {
     echo -e "\n${yellow}${bold}⚠  Mirror instability detected (timeouts or errors).${reset}"
@@ -581,6 +610,8 @@ read -r answer
 
 if [[ "$answer" =~ ^[Yy]$ || -z "$answer" ]]; then
     echo -e "\n"
+
+    backup_pacman_db
 
     $CORE_CMD
     core_exit=$?
