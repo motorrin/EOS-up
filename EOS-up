@@ -93,6 +93,7 @@ for pkg in "${CRITICAL_PKGS[@]}"; do CRIT_MAP["$pkg"]=1; done
 
 # --- 3. Temporary Files ---
 OUTPUT_FILE=$(mktemp)
+SYNC_LOG=$(mktemp)
 # Using mktemp -d safely
 if ! CHECK_DB=$(mktemp -d /tmp/checkupdates-db.XXXXXX); then
     echo -e "${red}Error: Could not create temp db directory.${reset}"
@@ -103,6 +104,7 @@ fi
 cleanup() {
     [[ -n "$CHECK_DB" && -d "$CHECK_DB" ]] && sudo rm -rf "$CHECK_DB"
     [[ -f "$OUTPUT_FILE" ]] && rm -f "$OUTPUT_FILE"
+    [[ -f "$SYNC_LOG" ]] && rm -f "$SYNC_LOG"
 }
 trap cleanup EXIT
 
@@ -170,40 +172,75 @@ get_type_color() {
 }
 
 check_arch_news() {
-    log_step "Starting Arch News check (curl)..."
+    log_step "Starting Arch News check (Python XML)..."
     echo -ne "${gray}  Checking Arch News... ${reset}"
 
-    # Use compressed transfer and simpler grep logic to find the first ITEM pubDate
-    if raw_rss=$(curl -sf --compressed --connect-timeout 2 --max-time 3 https://archlinux.org/feeds/news/); then
-        # Extract the first pubDate that appears inside an <item> block
-        # (The first pubDate in the file is usually the Channel Build Date, which updates constantly)
-        raw_date=$(echo "$raw_rss" | awk -F'<pubDate>' '/<item>/ {p=1} p && $2 {print $2; exit}' | awk -F'</pubDate>' '{print $1}')
+    # Using Python to atomically parse XML and convert dates to Timestamps
+    if news_ts=$(curl -sf --connect-timeout 2 --max-time 3 https://archlinux.org/feeds/news/ | python3 -c "
+import sys
+import xml.etree.ElementTree as ET
+import email.utils
 
-        if [[ -n "$raw_date" ]]; then
-            # Force the use of the C locale to correctly parse dates from RSS
-            news_time=$(LC_TIME=C date -d "$raw_date" +%s 2>/dev/null)
+try:
+    # Reading stdin
+    root = ET.fromstring(sys.stdin.read())
 
-            if [[ -n "$news_time" ]]; then
-                now_time=$(date +%s)
-                diff_hours=$(( (now_time - news_time) / 3600 ))
+    # Looking for the first <item> element inside <channel>
+    item = root.find('./channel/item')
 
-                if (( diff_hours < 336 )); then
-                    echo -e "\r\033[2K${red}${bold}  ⚠ WARNING: Fresh Arch News detected ($diff_hours h ago)!${reset}"
-                    echo -e "  ${red}  Check https://archlinux.org/ before updating.${reset}\n"
-                    return
-                else
-                    echo -e "\r\033[2K${green}  ✔ No fresh Arch News (last: ${diff_hours}h ago).${reset}\n"
-                    return
-                fi
-            fi
+    if item is not None:
+        pubDate = item.find('pubDate').text
+        # Parsing an RFC 822 date into a time tuple
+        parsed = email.utils.parsedate_tz(pubDate)
+        # Convert to timestamp (seconds)
+        timestamp = email.utils.mktime_tz(parsed)
+        print(int(timestamp))
+    else:
+        sys.exit(1)
+except Exception:
+    sys.exit(1)
+"); then
+        # If Python returned a timestamp (number)
+        now_time=$(date +%s)
+        diff_hours=$(( (now_time - news_ts) / 3600 ))
+
+        if (( diff_hours < 336 )); then # 336 hours = 14 days
+            echo -e "\r\033[2K${red}${bold}  ⚠ WARNING: Fresh Arch News detected ($diff_hours h ago)!${reset}"
+            echo -e "  ${red}  Check https://archlinux.org/ before updating.${reset}\n"
+        else
+            echo -e "\r\033[2K${green}  ✔ No fresh Arch News (last: ${diff_hours}h ago).${reset}\n"
         fi
+    else
+        # Fallback message
+        echo -e "\r\033[2K${dim}  ? Could not check Arch News (Connection or XML error).${reset}\n"
     fi
-
-    # Fallback message
-    echo -e "\r\033[2K${dim}  ? Could not check Arch News (Connection or parsing error).${reset}\n"
 }
 
-# --- 5. Main Logic ---
+# --- 5. Mirror Refresh Function ---
+refresh_mirrors() {
+    echo -e "\n${yellow}${bold}⚠  Mirror instability detected (timeouts or errors).${reset}"
+    echo -ne "  ${white}Refresh mirrors (Germany/Netherlands, HTTPS, Rate)? [Y/n]: ${reset}"
+    read -r ans
+    if [[ "$ans" =~ ^[Yy]$ || -z "$ans" ]]; then
+        echo -e "  ${blue}Running reflector...${reset}"
+        if command -v reflector &>/dev/null; then
+            # Download timeout is 5 seconds to avoid getting stuck on dead mirrors.
+            if sudo reflector --country Germany,Netherlands --protocol https --sort rate --save /etc/pacman.d/mirrorlist --download-timeout 5; then
+                echo -e "  ${green}✔ Mirrors updated successfully.${reset}\n"
+                return 0
+            else
+                echo -e "  ${red}✘ Reflector failed.${reset}\n"
+                return 1
+            fi
+        else
+            echo -e "  ${red}✘ Error: 'reflector' is not installed.${reset}\n"
+            return 1
+        fi
+    fi
+    return 1
+}
+
+# --- 6. Main Logic ---
 
 # 0. Refresh sudo credentials upfront to prevent password prompt from breaking the UI later
 log_step "Requesting Sudo access..."
@@ -232,12 +269,58 @@ ln -s /var/lib/pacman/local "$CHECK_DB/local" > /dev/null 2>&1
 sudo chown -R root:root "$CHECK_DB"
 sudo chmod 755 "$CHECK_DB"
 
-# 5. Synchronize the TEMPORARY database
-log_step "Syncing temporary database (pacman -Sy)..."
-if ! sudo pacman -Sy --dbpath "$CHECK_DB" --logfile /dev/null; then
-    echo -e "${red}Error: Could not sync databases.${reset}"
-    exit 1
-fi
+# 5. Synchronize the TEMPORARY database (With Error Detection)
+MAX_RETRIES=1
+attempt=0
+
+while (( attempt <= MAX_RETRIES )); do
+    log_step "Syncing temporary database (pacman -Sy)..."
+
+    set -o pipefail
+    # 2>&1 redirects errors in the general stream to be caught
+    if sudo pacman -Sy --dbpath "$CHECK_DB" --logfile /dev/null 2>&1 | tee "$SYNC_LOG"; then
+        PACMAN_EXIT=0
+    else
+        PACMAN_EXIT=$?
+    fi
+    set +o pipefail
+
+    # Analyzing the log for network errors
+    if grep -iqE "error|failed|timed out|could not resolve" "$SYNC_LOG"; then
+        IS_DIRTY=1
+    else
+        IS_DIRTY=0
+    fi
+
+    # Scenario 1: Everything is perfect
+    if [[ $PACMAN_EXIT -eq 0 && $IS_DIRTY -eq 0 ]]; then
+        break
+    else
+        # Scenario 2: There are errors, try to fix them (if there are attempts)
+        if (( attempt < MAX_RETRIES )); then
+            if refresh_mirrors; then
+                ((attempt++))
+                log_step "Retrying sync..."
+                continue
+            else
+                # If the user refused to update the mirrors
+                if [[ $PACMAN_EXIT -eq 0 ]]; then
+                     echo -e "${yellow}Proceeding despite mirror warnings...${reset}"
+                     break
+                fi
+            fi
+        fi
+
+        # Scenario 3: Attempts failed or fatal error
+        if [[ $PACMAN_EXIT -ne 0 ]]; then
+            echo -e "${red}Error: Could not sync databases.${reset}"
+            exit 1
+        else
+            # Pacman exited with code 0, but there were download errors (dirty pass)
+            break
+        fi
+    fi
+done
 
 # 6. Get the list of updates
 log_step "Calculating update list (pacman -Qu)..."
@@ -383,7 +466,7 @@ done <<< "$updates"
 
 echo -e "\n"
 
-# --- 6. Table Output ---
+# --- 7. Table Output ---
 
 w_age=6
 w_stat=8
@@ -521,7 +604,7 @@ done
 printf "${dim}%s${reset}\n" "$sep_line"
 echo -e "  ${gray}Total Download Size: ${white}${bold}${total_download_size}${reset}"
 
-# --- 7. Update Request ---
+# --- 8. Update Request ---
 
 # Check for packages that require a reboot
 if awk -F'\t' '$5 ~ /^(linux.*|nvidia.*|systemd.*|.*-ucode|cryptsetup|glibc|linux-firmware|mesa|wayland|xorg-server|dbus.*|qt[56]-base|plasma-.*|kwin|egl-wayland)$/' "$OUTPUT_FILE" | grep -q .; then
