@@ -275,9 +275,15 @@ fi
 echo -e "\n${blue}${bold}  󰚰  Checking for updates...${reset}"
 
 if [[ -f /var/lib/pacman/db.lck ]]; then
-    echo -e "${red}Error: Pacman database is locked (/var/lib/pacman/db.lck).${reset}"
-    echo -e "${yellow}Another package manager process is running.${reset}"
-    exit 1
+    if sudo fuser /var/lib/pacman/db.lck >/dev/null 2>&1; then
+        echo -e "${red}Error: Pacman database is locked (/var/lib/pacman/db.lck).${reset}"
+        echo -e "${yellow}Another package manager process is running.${reset}"
+        exit 1
+    else
+        echo -e "${yellow}⚠  Stale lock file found (no active process). Removing...${reset}"
+        sudo rm /var/lib/pacman/db.lck
+        echo -e "${green}✔  Lock file removed. Proceeding...${reset}"
+    fi
 fi
 
 check_arch_news
