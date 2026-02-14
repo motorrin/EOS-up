@@ -23,13 +23,18 @@ CRITICAL_PKGS=(
     "linux-lts" "linux-lts-headers"
     "linux-zen" "linux-zen-headers"
     "linux-hardened" "linux-hardened-headers"
-    "linux-firmware" "amd-ucode"
+    "linux-firmware"
+
+    # --- Microcode (AMD & INTEL) ---
+    "amd-ucode" "intel-ucode" "sof-firmware"
 
     # --- NVIDIA Drivers ---
     "nvidia" "nvidia-lts" "nvidia-dkms"
     "nvidia-open" "nvidia-open-lts" "nvidia-open-dkms"
     "nvidia-utils" "nvidia-settings" "lib32-nvidia-utils"
     "opencl-nvidia" "lib32-opencl-nvidia"
+    "nvidia-470xx-dkms" "nvidia-390xx-dkms"
+    "nvidia-prime" "cuda" "lib32-cuda"
 
     # --- Systemd & Init ---
     "systemd" "systemd-libs" "systemd-sysvcompat"
@@ -38,11 +43,13 @@ CRITICAL_PKGS=(
 
     # --- Core System & Base ---
     "base" "base-devel" "filesystem"
-    "glibc" "lib32-glibc" "dbus"
+    "glibc" "lib32-glibc" "dbus" "dbus-broker"
+    "glib2" "lib32-glib2" "sqlite" "readline" "ncurses"
     "gcc-libs" "lib32-gcc-libs" "util-linux"
     "libutil-linux" "openssl" "coreutils" "icu"
     "bash" "zsh" "sudo" "polkit" "shadow"
     "cryptsetup" "device-mapper" "zstd"
+    "llvm" "llvm-libs" "lib32-llvm-libs" "clang"
 
     # --- Package Management ---
     "pacman" "pacman-contrib" "pacman-mirrorlist"
@@ -58,20 +65,26 @@ CRITICAL_PKGS=(
     "grub" "efibootmgr" "os-prober" "dracut"
 
     # --- Graphics Stack ---
-    "mesa" "lib32-mesa" "vulkan-icd-loader" "lib32-vulkan-icd-loader"
+    "mesa" "lib32-mesa" "mesa-utils"
+    "vulkan-icd-loader" "lib32-vulkan-icd-loader"
     "xorg-server" "xorg-xwayland" "wayland" "wayland-protocols"
 
-    # AMD Drivers
-    "xf86-video-amdgpu"
+    # --- AMD ---
+    "xf86-video-amdgpu" "xf86-video-ati"
     "vulkan-radeon" "lib32-vulkan-radeon"
+    "amdvlk" "lib32-amdvlk"
+    "rocm-hip-runtime" "opencl-mesa" "lib32-opencl-mesa"
+
+    # --- INTEL ---
+    "xf86-video-intel"
+    "vulkan-intel" "lib32-vulkan-intel"
+    "intel-media-driver" "libva-intel-driver"
+    "onevpl-intel-gpu" "intel-compute-runtime"
+
 
     # Hardware Video Acceleration
-    "libva-mesa-driver" "lib32-libva-mesa-driver" "mesa-vdpau"
-
-    # --- KDE ---
-    "plasma-desktop" "plasma-workspace" "kwin"
-    "systemsettings" "sddm" "plasma-wayland-session"
-    "kde-cli-tools" "powerdevil"
+    "libva-mesa-driver" "lib32-libva-mesa-driver"
+    "mesa-vdpau" "lib32-mesa-vdpau"
 
     # Frameworks & Libraries
     "qt6-base" "qt5-base" "kwayland" "egl-wayland"
@@ -84,7 +97,104 @@ CRITICAL_PKGS=(
 
     # --- Audio & Networking ---
     "pipewire" "pipewire-audio" "wireplumber" "pipewire-pulse" "lib32-pipewire"
-    "networkmanager" "iwd" "bluez" "bluez-utils"
+    "alsa-lib" "lib32-alsa-lib" "alsa-utils" "alsa-plugins"
+    "networkmanager" "iwd" "wpa_supplicant" "bluez" "bluez-utils" "bluez-libs"
+
+    # --- KDE ---
+    "plasma-desktop" "plasma-workspace" "kwin"
+    "systemsettings" "sddm" "kde-cli-tools" "powerdevil"
+    "polkit-kde-agent" "breeze" "qt6-wayland"
+    "xdg-desktop-portal-kde" "spectacle" "kinfocenter"
+    "plasma-nm" "plasma-pa" "kscreen" "dolphin"
+
+    # --- GNOME ---
+    "gnome-shell" "mutter" "gnome-session"
+    "gnome-control-center" "gnome-settings-daemon"
+    "gdm" "libadwaita" "gtk4" "gtk3"
+    "xdg-desktop-portal-gnome" "gnome-keyring" "nautilus"
+    "gvfs" "xdg-user-dirs-gtk"
+
+    # --- COSMIC ---
+    "cosmic-comp" "cosmic-session" "cosmic-greeter"
+    "cosmic-settings" "cosmic-panel" "cosmic-applets"
+    "cosmic-launcher" "cosmic-workspaces" "cosmic-files"
+    "xdg-desktop-portal-cosmic" "cosmic-notifications"
+
+    # --- XFCE ---
+    "xfwm4" "xfce4-session" "xfce4-panel"
+    "xfce4-settings" "xfdesktop" "thunar"
+    "libxfce4ui" "exo" "garcon" "xfconf"
+    "xfce4-power-manager" "xfce4-notifyd"
+    "gvfs" "thunar-volman" "polkit-gnome"
+
+    # --- LXQt ---
+    "lxqt-session" "lxqt-panel" "lxqt-globalkeys"
+    "lxqt-notificationd" "lxqt-runner" "pcmanfm-qt"
+    "liblxqt" "lxqt-policykit" "openbox"
+    "xdg-desktop-portal-lxqt" "lxqt-sudo"
+    "gvfs"
+
+    # --- I3 ---
+    "i3-wm" "i3status" "i3lock" "i3blocks"
+    "dmenu" "rofi" "dunst" "picom" "feh"
+    "polkit-gnome" "xorg-server" "xorg-xinit"
+    "network-manager-applet"
+
+    # --- SWAY ---
+    "sway" "swaybg" "swayidle" "swaylock"
+    "wlroots" "xorg-xwayland" "polkit-gnome"
+    "xdg-desktop-portal-wlr" "xdg-desktop-portal-gtk"
+    "dmenu" "grim" "slurp"
+    "mako" "network-manager-applet"
+
+    # --- HYPRLAND ---
+    "hyprland" "hyprland-protocols"
+    "aquamarine" "hyprlang" "hyprcursor" "hyprutils"
+    "xdg-desktop-portal-hyprland" "xdg-desktop-portal-gtk"
+    "hyprlock" "hypridle" "hyprpaper"
+    "qt6-wayland" "qt5-wayland" "kitty"
+    "polkit-gnome" "dunst" "network-manager-applet"
+
+    # --- CINNAMON ---
+    "cinnamon" "cinnamon-session"
+    "cinnamon-settings-daemon" "cinnamon-control-center"
+    "muffin" "cinnamon-screensaver"
+    "cinnamon-menus" "nemo" "gnome-keyring"
+    "gvfs"
+
+    # --- MATE ---
+    "mate-desktop" "mate-session-manager"
+    "mate-panel" "mate-settings-daemon"
+    "mate-control-center" "marco"
+    "caja" "libmateweather" "mate-polkit"
+    "gvfs"
+
+    # --- LABWC ---
+    "labwc" "labwc-menu-generator"
+    "wlroots" "sfwbar" "kanshi"
+    "waybar" "wlr-randr"
+    "xdg-desktop-portal-wlr"
+    "mako" "polkit-gnome"
+
+    # --- OPENBOX ---
+    "openbox" "obconf" "tint2"
+    "lxappearance" "feh" "picom"
+    "dmenu" "rofi"
+    "polkit-gnome"
+
+    # --- QTILE ---
+    "qtile" "qtile-extras"
+    "python-psutil" "python-iwlib" "python-xdg"
+    "python-pywlroots" "python-cffi" "python-dbus-next"
+    "python-gobject"
+    "polkit-gnome" "dunst" "network-manager-applet"
+
+    # --- NIRI ---
+    "niri" "fuzzel" "mako"
+    "xwayland-satellite"
+    "xdg-desktop-portal-gnome"
+    "xdg-desktop-portal-gtk"
+    "polkit-gnome" "network-manager-applet"
 )
 
 declare -A CRIT_MAP
