@@ -37,7 +37,8 @@ CRITICAL_PKGS=(
     "nvidia-prime" "cuda" "lib32-cuda"
 
     # --- Systemd & Init ---
-    "systemd" "systemd-libs" "systemd-sysvcompat"
+    "systemd" "systemd-libs"
+    "systemd-sysvcompat"
     "systemd-resolvconf"
     "lib32-systemd"
 
@@ -48,24 +49,26 @@ CRITICAL_PKGS=(
     "gcc-libs" "lib32-gcc-libs" "util-linux"
     "libutil-linux" "openssl" "coreutils" "icu"
     "bash" "zsh" "sudo" "polkit" "shadow"
-    "cryptsetup" "device-mapper" "zstd"
+    "cryptsetup" "device-mapper" "lvm2" "zstd"
     "llvm" "llvm-libs" "lib32-llvm-libs" "clang"
 
     # --- Package Management ---
-    "pacman" "pacman-contrib" "pacman-mirrorlist"
+    "pacman" "pacman-contrib"
+    "pacman-mirrorlist" "endeavouros-mirrorlist"
     "archlinux-keyring" "endeavouros-keyring"
     "yay" "paru"
 
     # --- EndeavourOS Specific ---
-    "eos-update" "eos-hooks" "endeavouros-theming"
+    "eos-update" "eos-hooks"
+    "endeavouros-theming" "endeavouros-branding"
     "welcome" "eos-apps-info" "eos-rankmirrors"
-    "eos-sddm-theme"
+    "eos-sddm-theme" "eos-breeze-sddm" "eos-sddm-wallpaper"
 
     # --- Bootloaders ---
-    "grub" "efibootmgr" "os-prober" "dracut"
+    "grub" "efibootmgr" "os-prober" "dracut" "mkinitcpio"
 
     # --- Graphics Stack ---
-    "mesa" "lib32-mesa" "mesa-utils"
+    "mesa" "lib32-mesa" "mesa-utils" "mesa-libgl"
     "vulkan-icd-loader" "lib32-vulkan-icd-loader"
     "xorg-server" "xorg-xwayland" "wayland" "wayland-protocols"
 
@@ -80,7 +83,6 @@ CRITICAL_PKGS=(
     "vulkan-intel" "lib32-vulkan-intel"
     "intel-media-driver" "libva-intel-driver"
     "onevpl-intel-gpu" "intel-compute-runtime"
-
 
     # Hardware Video Acceleration
     "libva-mesa-driver" "lib32-libva-mesa-driver"
@@ -103,7 +105,7 @@ CRITICAL_PKGS=(
     # --- KDE ---
     "plasma-desktop" "plasma-workspace" "kwin"
     "systemsettings" "sddm" "kde-cli-tools" "powerdevil"
-    "polkit-kde-agent" "breeze" "qt6-wayland"
+    "polkit-kde-agent" "polkit-kde-agent-1" "breeze" "qt6-wayland"
     "xdg-desktop-portal-kde" "spectacle" "kinfocenter"
     "plasma-nm" "plasma-pa" "kscreen" "dolphin"
 
